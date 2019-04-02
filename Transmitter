@@ -1,0 +1,192 @@
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+#include <EEPROM.h>
+
+#define PIN_THROTTLE A0
+#define PIN_RUDDER A1
+#define MAX_THROTTLE 255
+#define MAX_RUDDER 180
+#define AVERAGE_RUDDER_CELL 0
+#define MIN_THROTTLE_CELL 1
+#define LIGHT_CELL 2
+#define MAX_RUDDER_CELL 3
+#define MIN_RUDDER_CELL 4
+#define THROTTLE_CENTER 511
+
+const int button_plus_thr_Pin = 8;
+const int button_minus_thr_Pin = 7;
+const int button_plus_rud_Pin = 6;
+const int button_minus_rud_Pin = 5;
+const int button_light_Pin = 4;
+const int bip = 3;
+
+int button_plus_thr_state = 0;
+int button_minus_thr_state = 0;
+int button_plus_rud_state = 0;
+int button_minus_rud_state = 0;
+int button_light_state = 0;
+
+RF24 radio(9, 10);
+const byte address[6] = "00001";
+byte data[4];
+byte average_rudder = 0;
+byte min_throttle = 0;
+byte max_rudder = 0;
+byte min_rudder = 0;
+bool light = false;
+const int rudder_offset = -90;
+
+void setup() {
+  tone (bip, 1000);
+
+  Serial.begin(9600);
+  average_rudder = EEPROM.read(AVERAGE_RUDDER_CELL);
+  min_throttle = EEPROM.read(MIN_THROTTLE_CELL);
+  light = EEPROM.read(LIGHT_CELL);
+  max_rudder = EEPROM.read(MAX_RUDDER_CELL);
+  min_rudder = EEPROM.read(MIN_RUDDER_CELL);
+
+  pinMode(bip, OUTPUT);
+  pinMode(button_plus_thr_Pin, INPUT);
+  pinMode(button_minus_thr_Pin, INPUT);
+  pinMode(button_plus_rud_Pin, INPUT);
+  pinMode(button_minus_rud_Pin, INPUT);
+  pinMode(button_light_Pin, INPUT);
+  pinMode(PIN_THROTTLE, INPUT);
+  pinMode(PIN_RUDDER, INPUT);
+
+  radio.begin();
+  radio.setAutoAck(1);
+  radio.setRetries(0, 15);
+  radio.enableAckPayload();
+  radio.setPayloadSize(4);
+
+  radio.openWritingPipe(address);
+  radio.setChannel(0x60);
+
+  radio.setPALevel(RF24_PA_MAX);
+  radio.setDataRate(RF24_250KBPS);
+
+  radio.powerUp();
+  radio.stopListening();
+
+  delay(500);
+
+  bool isOk = false;
+
+  while (!isOk) {
+    int raw_offset = analogRead(PIN_THROTTLE) - THROTTLE_CENTER;
+    int offset = abs(raw_offset);
+
+    if (offset < 50) {
+      isOk = true;
+    }
+
+    delay(10);
+  }
+
+  noTone(bip);
+
+  delay(1000);
+}
+
+void loop() {
+  int raw_throttle = analogRead(PIN_THROTTLE);
+  int raw_rudder = analogRead(PIN_RUDDER);
+
+  bool isForward = false;
+
+  if (raw_throttle >= THROTTLE_CENTER) {
+    isForward = true;
+  }
+
+  ReadSaveButtonStates();
+
+  int throttle, rudder;
+
+  if (isForward) {
+    throttle =  map(raw_throttle, THROTTLE_CENTER, 1023, min_throttle, MAX_THROTTLE);
+  }
+  else {
+    throttle =  map(raw_throttle, THROTTLE_CENTER, 0, min_throttle, MAX_THROTTLE);
+  }
+
+  rudder =  map(raw_rudder, 0, 1023, max_rudder, min_rudder);
+  rudder = rudder + rudder_offset + average_rudder;
+
+  data[0] = throttle;
+  data[1] = rudder;
+  data[2] = isForward;
+  data[3] = light;
+  radio.write(&data, sizeof(data));
+
+  delay(10);
+}
+
+void ReadSaveButtonStates() {
+  int raw_rudder = analogRead(PIN_RUDDER);
+
+  button_plus_thr_state = digitalRead(button_plus_thr_Pin);
+  button_minus_thr_state = digitalRead(button_minus_thr_Pin);
+  button_plus_rud_state = digitalRead(button_plus_rud_Pin);
+  button_minus_rud_state = digitalRead(button_minus_rud_Pin);
+  button_light_state = digitalRead(button_light_Pin);
+
+  if (button_plus_thr_state == HIGH) {
+    if (min_throttle < MAX_THROTTLE) {
+      min_throttle++;
+      EEPROM.write(MIN_THROTTLE_CELL, min_throttle);
+    }
+  }
+  if (button_minus_thr_state == HIGH) {
+    if (min_throttle > 0) {
+      min_throttle--;
+      EEPROM.write(MIN_THROTTLE_CELL, min_throttle);
+    }
+  }
+  if (button_plus_rud_state == HIGH) {
+    if (raw_rudder < 100) {
+      if (max_rudder < MAX_RUDDER) {
+        max_rudder++;
+        EEPROM.write(MAX_RUDDER_CELL, max_rudder);
+      }
+    }
+    else if (raw_rudder > 1000) {
+      if (min_rudder < MAX_RUDDER) {
+        min_rudder++;
+        EEPROM.write(MIN_RUDDER_CELL, min_rudder);
+      }
+    }
+    else {
+      if (average_rudder < MAX_RUDDER) {
+        average_rudder++;
+        EEPROM.write(AVERAGE_RUDDER_CELL, average_rudder);
+      }
+    }
+  }
+  if (button_minus_rud_state == HIGH) {
+    if (raw_rudder < 100) {
+      if (max_rudder > 0) {
+        max_rudder--;
+        EEPROM.write(MAX_RUDDER_CELL, max_rudder);
+      }
+    }
+    else if (raw_rudder > 1000) {
+      if (min_rudder > 0) {
+        min_rudder--;
+        EEPROM.write(MIN_RUDDER_CELL, min_rudder);
+      }
+    }
+    else {
+      if (average_rudder > 0) {
+        average_rudder--;
+        EEPROM.write(AVERAGE_RUDDER_CELL, average_rudder);
+      }
+    }
+  }
+  if (button_light_state == HIGH) {
+    light = !light;
+    EEPROM.write(LIGHT_CELL, light);
+  }
+}
